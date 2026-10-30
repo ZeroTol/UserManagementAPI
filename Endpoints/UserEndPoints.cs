@@ -1,3 +1,4 @@
+using FluentValidation;
 using UserManagementAPI.Models;
 using UserManagementAPI.Services;
 
@@ -7,11 +8,25 @@ public static class UserEndpoints
 {
     public static IEndpointRouteBuilder MapUserEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/users")
-                       .WithTags("Users");
+        var group = app.MapGroup("/users").WithTags("Users");
 
-        // GET /users
-        group.MapGet("/", (IUserStore store) => Results.Ok(store.GetAll()));
+        // GET /users?page=1&pageSize=20
+        group.MapGet("/", (IUserStore store, int page = 1, int pageSize = 20) =>
+        {
+            if (page < 1)
+                return Results.BadRequest("page must be >= 1.");
+            if (pageSize < 1 || pageSize > 100)
+                return Results.BadRequest("pageSize must be between 1 and 100.");
+
+            var all = store.GetAll().ToList();
+            var total = all.Count;
+            var items = all
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
+
+            return Results.Ok(new PagedResult<User>(items, page, pageSize, total));
+        });
 
         // GET /users/{id}
         group.MapGet("/{id:int}", (int id, IUserStore store) =>
@@ -21,20 +36,25 @@ public static class UserEndpoints
         });
 
         // POST /users
-        group.MapPost("/", (User input, IUserStore store) =>
+        group.MapPost("/", (User input, IValidator<User> validator, IUserStore store) =>
         {
-            if (!IsValid(input, out var error))
-                return Results.BadRequest(error);
+            var validation = validator.Validate(input);
+            if (!validation.IsValid)
+                return Results.ValidationProblem(validation.ToDictionary());
 
             var created = store.Add(input);
             return Results.Created($"/users/{created.Id}", created);
         });
 
         // PUT /users/{id}
-        group.MapPut("/{id:int}", (int id, User input, IUserStore store) =>
+        group.MapPut("/{id:int}", (int id, User input, IValidator<User> validator, IUserStore store) =>
         {
-            if (!IsValid(input, out var error))
-                return Results.BadRequest(error);
+            if (input.Id != 0 && input.Id != id)
+                return Results.BadRequest("Id in URL does not match Id in body.");
+
+            var validation = validator.Validate(input);
+            if (!validation.IsValid)
+                return Results.ValidationProblem(validation.ToDictionary());
 
             var updated = store.Update(id, input);
             return updated ? Results.NoContent() : Results.NotFound();
@@ -48,25 +68,5 @@ public static class UserEndpoints
         });
 
         return app;
-    }
-
-    private static bool IsValid(User user, out string error)
-    {
-        if (string.IsNullOrWhiteSpace(user.FirstName) ||
-            string.IsNullOrWhiteSpace(user.LastName) ||
-            string.IsNullOrWhiteSpace(user.Email))
-        {
-            error = "FirstName, LastName and Email are required.";
-            return false;
-        }
-
-        if (!user.Email.Contains('@'))
-        {
-            error = "Email is invalid.";
-            return false;
-        }
-
-        error = string.Empty;
-        return true;
     }
 }
